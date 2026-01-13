@@ -1,15 +1,13 @@
 package com.example.gitstatus
 
 import com.intellij.openapi.actionSystem.ActionManager
-import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.actionSystem.DataContext
-import com.intellij.openapi.actionSystem.Presentation
+import com.intellij.openapi.actionSystem.ActionPlaces
+import com.intellij.openapi.actionSystem.ex.ActionUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.wm.StatusBar
 import com.intellij.openapi.wm.StatusBarWidget
 import com.intellij.openapi.wm.impl.status.EditorBasedWidget
-import com.intellij.util.Consumer
 import java.awt.Color
 import java.awt.Component
 import java.awt.Graphics
@@ -77,17 +75,10 @@ class GitStatusWidget(project: Project) : EditorBasedWidget(project), StatusBarW
     override fun getTooltipText(): String =
         if (hasUncommittedChanges) "Uncommitted changes present" else "No uncommitted changes"
 
-    override fun getClickConsumer(): Consumer<MouseEvent> = Consumer {
+    override fun getClickConsumer(): com.intellij.util.Consumer<MouseEvent>? = com.intellij.util.Consumer { e ->
         if (!project.isDisposed) {
             val action = ActionManager.getInstance().getAction("CheckinProject")
-            val dataContext = DataContext { dataId ->
-                when (dataId) {
-                    "project" -> project
-                    else -> null
-                }
-            }
-            val event = AnActionEvent.createFromAnAction(action, null, "", dataContext)
-            action.actionPerformed(event)
+            ActionUtil.invokeAction(action, e.component, ActionPlaces.STATUS_BAR_PLACE, null, null)
         }
     }
 
