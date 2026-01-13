@@ -1,0 +1,24 @@
+<idea-plugin>
+    <id>com.vladimir.biro.gitstatus</id>
+    <name>Git Status Indicator</name>
+    <vendor>vladimir.biro</vendor>
+
+    <description><![CDATA[
+    Shows a colored icon in the status bar indicating Git repository status:
+    <ul>
+        <li>Green: No uncommitted changes</li>
+        <li>Red: Uncommitted changes present</li>
+    </ul>
+    Click the icon to open the Commit window.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>Git4Idea</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <statusBarWidgetFactory
+                id="GitStatusWidget"
+                implementation="com.example.gitstatus.GitStatusWidgetFactory"
+                order="after positionWidget"/>
+    </extensions>
+</idea-plugin>
