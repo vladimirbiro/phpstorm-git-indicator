@@ -3,14 +3,20 @@ package com.example.gitstatus
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionPlaces
 import com.intellij.openapi.actionSystem.ex.ActionUtil
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.wm.StatusBar
 import com.intellij.openapi.wm.StatusBarWidget
 import com.intellij.openapi.wm.impl.status.EditorBasedWidget
+import git4idea.history.GitHistoryUtils
+import git4idea.repo.GitRepositoryManager
 import java.awt.Color
 import java.awt.Component
 import java.awt.Graphics
+import java.awt.Graphics2D
+import java.awt.RenderingHints
 import java.awt.event.MouseEvent
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -25,6 +31,7 @@ class GitStatusWidget(project: Project) : EditorBasedWidget(project), StatusBarW
     }
 
     private var hasUncommittedChanges = false
+    private var hasUnpushedCommits = false
     private var scheduler: ScheduledExecutorService? = null
 
     override fun ID(): String = ID
@@ -60,20 +67,57 @@ class GitStatusWidget(project: Project) : EditorBasedWidget(project), StatusBarW
     private fun checkGitStatus() {
         if (project.isDisposed) return
 
-        val changeListManager = ChangeListManager.getInstance(project)
-        val newStatus = changeListManager.allChanges.isNotEmpty() ||
-                changeListManager.unversionedFilesPaths.isNotEmpty()
+        val newUncommittedStatus = ReadAction.compute<Boolean, Exception> {
+            if (project.isDisposed) return@compute false
+            val changeListManager = ChangeListManager.getInstance(project)
+            changeListManager.allChanges.isNotEmpty() ||
+                    changeListManager.unversionedFilesPaths.isNotEmpty()
+        }
 
-        if (newStatus != hasUncommittedChanges) {
-            hasUncommittedChanges = newStatus
-            myStatusBar?.updateWidget(ID)
+        val newUnpushedStatus = checkForUnpushedCommits()
+
+        if (newUncommittedStatus != hasUncommittedChanges || newUnpushedStatus != hasUnpushedCommits) {
+            hasUncommittedChanges = newUncommittedStatus
+            hasUnpushedCommits = newUnpushedStatus
+            ApplicationManager.getApplication().invokeLater {
+                if (!project.isDisposed) {
+                    myStatusBar?.updateWidget(ID)
+                }
+            }
         }
     }
 
-    override fun getIcon(): Icon = StatusIcon(hasUncommittedChanges)
+    private fun checkForUnpushedCommits(): Boolean {
+        if (project.isDisposed) return false
 
-    override fun getTooltipText(): String =
-        if (hasUncommittedChanges) "Uncommitted changes present" else "No uncommitted changes"
+        return try {
+            val repositoryManager = GitRepositoryManager.getInstance(project)
+            for (repository in repositoryManager.repositories) {
+                val currentBranch = repository.currentBranch ?: continue
+                val trackInfo = repository.getBranchTrackInfo(currentBranch.name) ?: continue
+                val remoteBranch = trackInfo.remoteBranch
+
+                val aheadCount = GitHistoryUtils.getNumberOfCommitsBetween(
+                    repository,
+                    remoteBranch.nameForLocalOperations,
+                    currentBranch.name
+                )?.toIntOrNull() ?: 0
+
+                if (aheadCount > 0) return true
+            }
+            false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    override fun getIcon(): Icon = StatusIcon(hasUncommittedChanges, hasUnpushedCommits)
+
+    override fun getTooltipText(): String {
+        val uncommittedText = if (hasUncommittedChanges) "Uncommitted changes" else "No uncommitted changes"
+        val unpushedText = if (hasUnpushedCommits) "Unpushed commits" else "No unpushed commits"
+        return "$uncommittedText | $unpushedText"
+    }
 
     override fun getClickConsumer(): com.intellij.util.Consumer<MouseEvent>? = com.intellij.util.Consumer { e ->
         if (!project.isDisposed) {
@@ -82,16 +126,32 @@ class GitStatusWidget(project: Project) : EditorBasedWidget(project), StatusBarW
         }
     }
 
-    private class StatusIcon(private val hasChanges: Boolean) : Icon {
-        private val size = 12
+    private class StatusIcon(
+        private val hasUncommittedChanges: Boolean,
+        private val hasUnpushedCommits: Boolean
+    ) : Icon {
+        private val circleSize = 12
+        private val spacing = 4
+        private val totalWidth = circleSize * 2 + spacing
 
         override fun paintIcon(c: Component?, g: Graphics, x: Int, y: Int) {
-            val color = if (hasChanges) Color(0x2F, 0x97, 0x30) else Color(0x44, 0x47, 0x4D)
-            g.color = color
-            g.fillOval(x, y, size, size)
+            val g2d = g.create() as Graphics2D
+            g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+
+            // First circle: uncommitted changes (green if has changes, gray otherwise)
+            val uncommittedColor = if (hasUncommittedChanges) Color(0x2F, 0x97, 0x30) else Color(0x44, 0x47, 0x4D)
+            g2d.color = uncommittedColor
+            g2d.fillOval(x, y, circleSize, circleSize)
+
+            // Second circle: unpushed commits (blue if has unpushed, gray otherwise)
+            val unpushedColor = if (hasUnpushedCommits) Color(0x1E, 0x90, 0xFF) else Color(0x44, 0x47, 0x4D)
+            g2d.color = unpushedColor
+            g2d.fillOval(x + circleSize + spacing, y, circleSize, circleSize)
+
+            g2d.dispose()
         }
 
-        override fun getIconWidth(): Int = size
-        override fun getIconHeight(): Int = size
+        override fun getIconWidth(): Int = totalWidth
+        override fun getIconHeight(): Int = circleSize
     }
 }

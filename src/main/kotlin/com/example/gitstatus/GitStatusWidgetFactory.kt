@@ -4,7 +4,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.StatusBar
 import com.intellij.openapi.wm.StatusBarWidget
 import com.intellij.openapi.wm.StatusBarWidgetFactory
-import git4idea.repo.GitRepositoryManager
 
 class GitStatusWidgetFactory : StatusBarWidgetFactory {
 
@@ -12,10 +11,7 @@ class GitStatusWidgetFactory : StatusBarWidgetFactory {
 
     override fun getDisplayName(): String = "Git Status Indicator"
 
-    override fun isAvailable(project: Project): Boolean {
-        val repositoryManager = GitRepositoryManager.getInstance(project)
-        return repositoryManager.repositories.isNotEmpty()
-    }
+    override fun isAvailable(project: Project): Boolean = true
 
     override fun createWidget(project: Project): StatusBarWidget = GitStatusWidget(project)
 
