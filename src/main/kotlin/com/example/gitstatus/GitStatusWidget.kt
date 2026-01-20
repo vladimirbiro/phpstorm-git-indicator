@@ -4,13 +4,16 @@ import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionPlaces
 import com.intellij.openapi.actionSystem.ex.ActionUtil
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.wm.StatusBar
 import com.intellij.openapi.wm.StatusBarWidget
 import com.intellij.openapi.wm.impl.status.EditorBasedWidget
 import git4idea.commands.Git
 import git4idea.commands.GitCommand
 import git4idea.commands.GitLineHandler
+import git4idea.config.GitVcsSettings
 import git4idea.history.GitHistoryUtils
 import git4idea.repo.GitRepositoryManager
 import java.awt.Color
@@ -29,6 +32,7 @@ class GitStatusWidget(project: Project) : EditorBasedWidget(project), StatusBarW
     companion object {
         const val ID = "GitStatusWidget"
         private const val CHECK_INTERVAL_SECONDS = 5L
+        private val LOG = Logger.getInstance(GitStatusWidget::class.java)
     }
 
     private var hasStagedChanges = false
@@ -87,6 +91,25 @@ class GitStatusWidget(project: Project) : EditorBasedWidget(project), StatusBarW
     private fun checkStagedAndUnstagedChanges(): Pair<Boolean, Boolean> {
         if (project.isDisposed) return Pair(false, false)
 
+        // Check if staging area is enabled in PhpStorm settings
+        val gitSettings = GitVcsSettings.getInstance(project)
+        val stagingAreaEnabled = gitSettings.let {
+            try {
+                it.javaClass.getMethod("isStagingAreaEnabled").invoke(it) as Boolean
+            } catch (e: Exception) {
+                // Fallback for older versions - check if method exists
+                false
+            }
+        }
+
+        return if (stagingAreaEnabled) {
+            checkWithGitStaging()
+        } else {
+            checkWithChangeLists()
+        }
+    }
+
+    private fun checkWithGitStaging(): Pair<Boolean, Boolean> {
         var hasStaged = false
         var hasUnstaged = false
 
@@ -98,22 +121,27 @@ class GitStatusWidget(project: Project) : EditorBasedWidget(project), StatusBarW
                 // Use git status --porcelain to check staged/unstaged
                 val handler = GitLineHandler(project, root, GitCommand.STATUS)
                 handler.addParameters("--porcelain")
+                handler.setSilent(true)
                 val result = Git.getInstance().runCommand(handler)
 
                 if (result.success()) {
-                    for (line in result.output) {
+                    val outputLines = result.output
+                    for (line in outputLines) {
                         if (line.length < 2) continue
                         val indexStatus = line[0]  // Status in staging area
                         val workTreeStatus = line[1]  // Status in working tree
 
-                        // If index status is not space and not '?', file is staged
+                        // Staged: index has M, A, D, R, C (not space, not ?)
                         if (indexStatus != ' ' && indexStatus != '?') {
                             hasStaged = true
                         }
 
-                        // If work tree status is not space, file has unstaged changes
-                        // Also '?' means untracked file (unstaged)
-                        if (workTreeStatus != ' ' || indexStatus == '?') {
+                        // Unstaged: working tree has M, D, or file is untracked (??)
+                        if (workTreeStatus != ' ' && workTreeStatus != '?') {
+                            hasUnstaged = true
+                        }
+                        // Untracked files count as unstaged
+                        if (indexStatus == '?' && workTreeStatus == '?') {
                             hasUnstaged = true
                         }
 
@@ -124,10 +152,27 @@ class GitStatusWidget(project: Project) : EditorBasedWidget(project), StatusBarW
                 if (hasStaged && hasUnstaged) break
             }
         } catch (e: Exception) {
-            // Fallback: if git commands fail, return false
+            LOG.warn("Error checking git staging status", e)
         }
 
         return Pair(hasStaged, hasUnstaged)
+    }
+
+    private fun checkWithChangeLists(): Pair<Boolean, Boolean> {
+        // When staging area is disabled, PhpStorm uses ChangeLists
+        // All changes in changelists are considered "ready to commit" (staged)
+        // There's no concept of "unstaged" in this mode
+        return try {
+            val changeListManager = ChangeListManager.getInstance(project)
+            val hasChanges = changeListManager.allChanges.isNotEmpty()
+            val hasUntracked = changeListManager.unversionedFilesPaths.isNotEmpty()
+
+            // In changelist mode: changes = staged (green), untracked = unstaged (red inner)
+            Pair(hasChanges, hasUntracked)
+        } catch (e: Exception) {
+            LOG.warn("Error checking changelist status", e)
+            Pair(false, false)
+        }
     }
 
     private fun checkForUnpushedCommits(): Boolean {
@@ -158,9 +203,9 @@ class GitStatusWidget(project: Project) : EditorBasedWidget(project), StatusBarW
 
     override fun getTooltipText(): String {
         val stagedText = when {
-            hasStagedChanges && hasUnstagedChanges -> "Staged + Unstaged changes"
-            hasStagedChanges -> "Staged changes (ready to commit)"
-            hasUnstagedChanges -> "Unstaged changes (need git add)"
+            hasStagedChanges && hasUnstagedChanges -> "Changes to commit + Untracked files"
+            hasStagedChanges -> "Changes to commit"
+            hasUnstagedChanges -> "Untracked files"
             else -> "No changes"
         }
         val unpushedText = if (hasUnpushedCommits) "Unpushed commits" else "All pushed"
