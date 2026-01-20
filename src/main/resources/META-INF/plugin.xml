@@ -6,13 +6,25 @@
     <description><![CDATA[
     Shows two colored indicators in the status bar for Git repository status:
     <ul>
-        <li><b>First circle (Uncommitted changes):</b> Green = has changes, Gray = clean</li>
-        <li><b>Second circle (Unpushed commits):</b> Blue = has unpushed commits, Gray = all pushed</li>
+        <li><b>First circle (Changes):</b>
+            <ul>
+                <li>Gray = no changes</li>
+                <li>Green = staged changes (ready to commit)</li>
+                <li>Gray/Green + red inner circle = unstaged changes (need git add)</li>
+            </ul>
+        </li>
+        <li><b>Second circle (Push status):</b> Blue = unpushed commits, Gray = all pushed</li>
     </ul>
     Click the indicator to open the Commit window.
     ]]></description>
 
     <change-notes><![CDATA[
+    <b>1.2.0</b>
+    <ul>
+        <li>Added unstaged changes indicator (red inner circle)</li>
+        <li>First circle now distinguishes between staged (green) and unstaged (red inner) changes</li>
+        <li>Improved tooltips with detailed status information</li>
+    </ul>
     <b>1.1.0</b>
     <ul>
         <li>Added second indicator for unpushed commits (blue = unpushed, gray = all pushed)</li>

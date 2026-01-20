@@ -4,12 +4,13 @@ import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionPlaces
 import com.intellij.openapi.actionSystem.ex.ActionUtil
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.wm.StatusBar
 import com.intellij.openapi.wm.StatusBarWidget
 import com.intellij.openapi.wm.impl.status.EditorBasedWidget
+import git4idea.commands.Git
+import git4idea.commands.GitCommand
+import git4idea.commands.GitLineHandler
 import git4idea.history.GitHistoryUtils
 import git4idea.repo.GitRepositoryManager
 import java.awt.Color
@@ -30,7 +31,8 @@ class GitStatusWidget(project: Project) : EditorBasedWidget(project), StatusBarW
         private const val CHECK_INTERVAL_SECONDS = 5L
     }
 
-    private var hasUncommittedChanges = false
+    private var hasStagedChanges = false
+    private var hasUnstagedChanges = false
     private var hasUnpushedCommits = false
     private var scheduler: ScheduledExecutorService? = null
 
@@ -67,17 +69,12 @@ class GitStatusWidget(project: Project) : EditorBasedWidget(project), StatusBarW
     private fun checkGitStatus() {
         if (project.isDisposed) return
 
-        val newUncommittedStatus = ReadAction.compute<Boolean, Exception> {
-            if (project.isDisposed) return@compute false
-            val changeListManager = ChangeListManager.getInstance(project)
-            changeListManager.allChanges.isNotEmpty() ||
-                    changeListManager.unversionedFilesPaths.isNotEmpty()
-        }
-
+        val (newStagedStatus, newUnstagedStatus) = checkStagedAndUnstagedChanges()
         val newUnpushedStatus = checkForUnpushedCommits()
 
-        if (newUncommittedStatus != hasUncommittedChanges || newUnpushedStatus != hasUnpushedCommits) {
-            hasUncommittedChanges = newUncommittedStatus
+        if (newStagedStatus != hasStagedChanges || newUnstagedStatus != hasUnstagedChanges || newUnpushedStatus != hasUnpushedCommits) {
+            hasStagedChanges = newStagedStatus
+            hasUnstagedChanges = newUnstagedStatus
             hasUnpushedCommits = newUnpushedStatus
             ApplicationManager.getApplication().invokeLater {
                 if (!project.isDisposed) {
@@ -85,6 +82,52 @@ class GitStatusWidget(project: Project) : EditorBasedWidget(project), StatusBarW
                 }
             }
         }
+    }
+
+    private fun checkStagedAndUnstagedChanges(): Pair<Boolean, Boolean> {
+        if (project.isDisposed) return Pair(false, false)
+
+        var hasStaged = false
+        var hasUnstaged = false
+
+        try {
+            val repositoryManager = GitRepositoryManager.getInstance(project)
+            for (repository in repositoryManager.repositories) {
+                val root = repository.root
+
+                // Use git status --porcelain to check staged/unstaged
+                val handler = GitLineHandler(project, root, GitCommand.STATUS)
+                handler.addParameters("--porcelain")
+                val result = Git.getInstance().runCommand(handler)
+
+                if (result.success()) {
+                    for (line in result.output) {
+                        if (line.length < 2) continue
+                        val indexStatus = line[0]  // Status in staging area
+                        val workTreeStatus = line[1]  // Status in working tree
+
+                        // If index status is not space and not '?', file is staged
+                        if (indexStatus != ' ' && indexStatus != '?') {
+                            hasStaged = true
+                        }
+
+                        // If work tree status is not space, file has unstaged changes
+                        // Also '?' means untracked file (unstaged)
+                        if (workTreeStatus != ' ' || indexStatus == '?') {
+                            hasUnstaged = true
+                        }
+
+                        if (hasStaged && hasUnstaged) break
+                    }
+                }
+
+                if (hasStaged && hasUnstaged) break
+            }
+        } catch (e: Exception) {
+            // Fallback: if git commands fail, return false
+        }
+
+        return Pair(hasStaged, hasUnstaged)
     }
 
     private fun checkForUnpushedCommits(): Boolean {
@@ -111,12 +154,17 @@ class GitStatusWidget(project: Project) : EditorBasedWidget(project), StatusBarW
         }
     }
 
-    override fun getIcon(): Icon = StatusIcon(hasUncommittedChanges, hasUnpushedCommits)
+    override fun getIcon(): Icon = StatusIcon(hasStagedChanges, hasUnstagedChanges, hasUnpushedCommits)
 
     override fun getTooltipText(): String {
-        val uncommittedText = if (hasUncommittedChanges) "Uncommitted changes" else "No uncommitted changes"
-        val unpushedText = if (hasUnpushedCommits) "Unpushed commits" else "No unpushed commits"
-        return "$uncommittedText | $unpushedText"
+        val stagedText = when {
+            hasStagedChanges && hasUnstagedChanges -> "Staged + Unstaged changes"
+            hasStagedChanges -> "Staged changes (ready to commit)"
+            hasUnstagedChanges -> "Unstaged changes (need git add)"
+            else -> "No changes"
+        }
+        val unpushedText = if (hasUnpushedCommits) "Unpushed commits" else "All pushed"
+        return "$stagedText | $unpushedText"
     }
 
     override fun getClickConsumer(): com.intellij.util.Consumer<MouseEvent>? = com.intellij.util.Consumer { e ->
@@ -127,10 +175,12 @@ class GitStatusWidget(project: Project) : EditorBasedWidget(project), StatusBarW
     }
 
     private class StatusIcon(
-        private val hasUncommittedChanges: Boolean,
+        private val hasStagedChanges: Boolean,
+        private val hasUnstagedChanges: Boolean,
         private val hasUnpushedCommits: Boolean
     ) : Icon {
         private val circleSize = 12
+        private val innerCircleSize = 6
         private val spacing = 4
         private val totalWidth = circleSize * 2 + spacing
 
@@ -138,10 +188,18 @@ class GitStatusWidget(project: Project) : EditorBasedWidget(project), StatusBarW
             val g2d = g.create() as Graphics2D
             g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
 
-            // First circle: uncommitted changes (green if has changes, gray otherwise)
-            val uncommittedColor = if (hasUncommittedChanges) Color(0x2F, 0x97, 0x30) else Color(0x44, 0x47, 0x4D)
-            g2d.color = uncommittedColor
+            // First circle: staged changes (green if staged, gray otherwise)
+            val stagedColor = if (hasStagedChanges) Color(0x2F, 0x97, 0x30) else Color(0x44, 0x47, 0x4D)
+            g2d.color = stagedColor
             g2d.fillOval(x, y, circleSize, circleSize)
+
+            // Inner red circle if has unstaged changes
+            if (hasUnstagedChanges) {
+                val innerX = x + (circleSize - innerCircleSize) / 2
+                val innerY = y + (circleSize - innerCircleSize) / 2
+                g2d.color = Color(0xE5, 0x3E, 0x3E) // Red color
+                g2d.fillOval(innerX, innerY, innerCircleSize, innerCircleSize)
+            }
 
             // Second circle: unpushed commits (blue if has unpushed, gray otherwise)
             val unpushedColor = if (hasUnpushedCommits) Color(0x1E, 0x90, 0xFF) else Color(0x44, 0x47, 0x4D)
